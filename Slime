@@ -1,0 +1,339 @@
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Players = game:GetService("Players")
+local VirtualUser = game:GetService("VirtualUser")
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local rootPart = character:WaitForChild("HumanoidRootPart")
+local lootFolder = game.Workspace:WaitForChild("Loot")
+
+-- SETTINGS SAVE/LOAD
+local settingsFile = "SlimeRNG_Settings.json"
+local settings = {
+    AutoCollect = false,
+    AutoFruit = false,
+    AutoRoll = false,
+    AntiAFK = false,
+}
+
+local function saveSettings()
+    pcall(function()
+        writefile(settingsFile, game:GetService("HttpService"):JSONEncode(settings))
+    end)
+end
+
+local function loadSettings()
+    pcall(function()
+        if isfile(settingsFile) then
+            local data = game:GetService("HttpService"):JSONDecode(readfile(settingsFile))
+            for k, v in pairs(data) do
+                settings[k] = v
+            end
+        end
+    end)
+end
+
+loadSettings()
+
+local autoCollect = settings.AutoCollect
+local autoFruit = settings.AutoFruit
+local autoRoll = settings.AutoRoll
+local antiAfk = settings.AntiAFK
+local queue = {}
+local fruitQueue = {}
+local isProcessing = false
+local isFruitProcessing = false
+
+local rollRemote = game:GetService("ReplicatedStorage")
+    :WaitForChild("Packages")
+    :WaitForChild("_Index")
+    :WaitForChild("leifstout_networker@0.3.1")
+    :WaitForChild("networker")
+    :WaitForChild("_remotes")
+    :WaitForChild("RollService")
+    :WaitForChild("RemoteFunction")
+
+local fruitNames = {
+    fireFruit = true, iceFruit = true, lightningFruit = true,
+    magicianFruit = true, swordFruit = true,
+}
+
+local function isFruitContainer(container)
+    for _, child in pairs(container:GetChildren()) do
+        if fruitNames[child.Name] then return true end
+    end
+    return false
+end
+
+-- Anti AFK
+player.Idled:Connect(function()
+    if antiAfk then
+        VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+        task.wait(1)
+        VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+    end
+end)
+
+local function savePosition()
+    return rootPart.CFrame
+end
+
+-- LOOT: touch based
+local function processQueue()
+    if isProcessing then return end
+    isProcessing = true
+    local savedPosition = savePosition()
+    while #queue > 0 do
+        if not autoCollect then break end
+        local item = table.remove(queue, 1)
+        if item and item.Parent then
+            local root = item:FindFirstChild("Root")
+            local target = root or item:FindFirstChildWhichIsA("BasePart")
+            if target then
+                rootPart.CFrame = CFrame.new(target.Position)
+                task.wait(0.3)
+            end
+        end
+    end
+    rootPart.CFrame = savedPosition
+    isProcessing = false
+end
+
+local function addToQueue(item)
+    if not autoCollect then return end
+    table.insert(queue, item)
+    task.spawn(processQueue)
+end
+
+-- FRUIT: proximity prompt based
+local function processFruitQueue()
+    if isFruitProcessing then return end
+    isFruitProcessing = true
+    local savedPosition = savePosition()
+    while #fruitQueue > 0 do
+        if not autoFruit then break end
+        local container = table.remove(fruitQueue, 1)
+        if container and container.Parent then
+            local root = container:FindFirstChild("Root")
+            local target = root or container:FindFirstChildWhichIsA("BasePart")
+            if target then
+                rootPart.CFrame = CFrame.new(target.Position)
+                task.wait(0.1)
+                for _, desc in pairs(container:GetDescendants()) do
+                    if desc:IsA("ProximityPrompt") then
+                        pcall(fireproximityprompt, desc)
+                    end
+                end
+                task.wait(0.2)
+            end
+        end
+    end
+    rootPart.CFrame = savedPosition
+    isFruitProcessing = false
+end
+
+local function addToFruitQueue(container)
+    if not autoFruit then return end
+    table.insert(fruitQueue, container)
+    task.spawn(processFruitQueue)
+end
+
+local function checkContainer(container)
+    if isFruitContainer(container) then
+        addToFruitQueue(container)
+    else
+        addToQueue(container)
+    end
+end
+
+local lootConnection = nil
+local function startCollect()
+    for _, item in pairs(lootFolder:GetChildren()) do
+        checkContainer(item)
+    end
+    lootConnection = lootFolder.ChildAdded:Connect(function(newItem)
+        task.wait(0.1)
+        checkContainer(newItem)
+    end)
+end
+
+local function stopCollect()
+    if lootConnection then
+        lootConnection:Disconnect()
+        lootConnection = nil
+    end
+    queue = {}
+end
+
+local fruitConnection = nil
+local function startFruit()
+    for _, item in pairs(lootFolder:GetChildren()) do
+        if isFruitContainer(item) then
+            addToFruitQueue(item)
+        end
+    end
+    fruitConnection = lootFolder.ChildAdded:Connect(function(newItem)
+        task.wait(0.1)
+        if isFruitContainer(newItem) then
+            addToFruitQueue(newItem)
+        end
+    end)
+end
+
+local function stopFruit()
+    if fruitConnection then
+        fruitConnection:Disconnect()
+        fruitConnection = nil
+    end
+    fruitQueue = {}
+end
+
+-- RAYFIELD UI
+local Window = Rayfield:CreateWindow({
+    Name = "Slime RNG | v0.0.6",
+    LoadingTitle = "Slime RNG",
+    LoadingSubtitle = "v0.0.6",
+    DisableRayfieldPrompts = true,
+    DisableBuildWarnings = true,
+})
+
+local MainTab = Window:CreateTab("Auto Collect", nil)
+
+MainTab:CreateSection("Loot Teleport")
+
+MainTab:CreateToggle({
+    Name = "Auto Collect Loot",
+    CurrentValue = settings.AutoCollect,
+    Flag = "AutoCollect",
+    Callback = function(val)
+        autoCollect = val
+        settings.AutoCollect = val
+        saveSettings()
+        if val then
+            character = player.Character or player.CharacterAdded:Wait()
+            rootPart = character:WaitForChild("HumanoidRootPart")
+            startCollect()
+            Rayfield:Notify({
+                Title = "Auto Collect",
+                Content = "Started collecting loot!",
+                Duration = 2,
+            })
+        else
+            stopCollect()
+            Rayfield:Notify({
+                Title = "Auto Collect",
+                Content = "Stopped.",
+                Duration = 2,
+            })
+        end
+    end
+})
+
+MainTab:CreateSection("Auto Fruit")
+
+MainTab:CreateToggle({
+    Name = "Auto Fruit",
+    CurrentValue = settings.AutoFruit,
+    Flag = "AutoFruit",
+    Callback = function(val)
+        autoFruit = val
+        settings.AutoFruit = val
+        saveSettings()
+        if val then
+            character = player.Character or player.CharacterAdded:Wait()
+            rootPart = character:WaitForChild("HumanoidRootPart")
+            startFruit()
+            Rayfield:Notify({
+                Title = "Auto Fruit",
+                Content = "Started collecting fruits!",
+                Duration = 2,
+            })
+        else
+            stopFruit()
+            Rayfield:Notify({
+                Title = "Auto Fruit",
+                Content = "Stopped.",
+                Duration = 2,
+            })
+        end
+    end
+})
+
+MainTab:CreateSection("Auto Roll")
+
+MainTab:CreateToggle({
+    Name = "Auto Roll",
+    CurrentValue = settings.AutoRoll,
+    Flag = "AutoRoll",
+    Callback = function(val)
+        autoRoll = val
+        settings.AutoRoll = val
+        saveSettings()
+        if val then
+            task.spawn(function()
+                while autoRoll do
+                    pcall(function()
+                        rollRemote:InvokeServer("requestRoll")
+                    end)
+                    task.wait(0.2)
+                end
+            end)
+            Rayfield:Notify({
+                Title = "Auto Roll",
+                Content = "Started rolling!",
+                Duration = 2,
+            })
+        else
+            Rayfield:Notify({
+                Title = "Auto Roll",
+                Content = "Stopped.",
+                Duration = 2,
+            })
+        end
+    end
+})
+
+local MiscTab = Window:CreateTab("Misc", nil)
+
+MiscTab:CreateSection("Anti AFK")
+
+MiscTab:CreateToggle({
+    Name = "Anti AFK",
+    CurrentValue = settings.AntiAFK,
+    Flag = "AntiAFK",
+    Callback = function(val)
+        antiAfk = val
+        settings.AntiAFK = val
+        saveSettings()
+        Rayfield:Notify({
+            Title = "Anti AFK",
+            Content = val and "Enabled!" or "Disabled!",
+            Duration = 2,
+        })
+    end
+})
+
+-- Auto start features based on saved settings
+task.wait(1)
+if autoCollect then
+    startCollect()
+end
+if autoFruit then
+    startFruit()
+end
+if autoRoll then
+    task.spawn(function()
+        while autoRoll do
+            pcall(function()
+                rollRemote:InvokeServer("requestRoll")
+            end)
+            task.wait(0.2)
+        end
+    end)
+end
+
+Rayfield:Notify({
+    Title = "Slime RNG",
+    Content = "v0.0.6 Loaded!",
+    Duration = 3,
+})
